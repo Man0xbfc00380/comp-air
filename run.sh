@@ -41,16 +41,9 @@ echo "========== (3) DRAM-PIM + SRAM-PIM + NoC =========="
   --result-dir compair_results/case_3_dram_pim_sram_pim_noc
 
 echo
-echo "========== (4) DRAM-PIM + SRAM-PIM + NoC + collective split x2 =========="
-"$PY" compair_perf_pipeline.py "${BASE[@]}" --use-noc --use-sram-pim \
-  --noc-collective-split 2 \
-  --result-dir compair_results/case_4_dram_pim_sram_pim_noc_split2
-
-echo
 echo "Done. CompAir outputs: compair_results/case_*/{row_isa.txt,compair_summary.json}"
 echo "CENT CSVs (per offload config): each case dir has simulation_results.csv, processed_results.csv"
 echo "DRAM Ramulator logs next to traces: cent_pim/trace/.../trace_*.txt.log"
 echo "  (1) 32_channels_per_device"
 echo "  (2) 32_channels_per_device_sram_pim"
 echo "  (3) 32_channels_per_device_noc_sram_pim"
-echo "  (4) 32_channels_per_device_noc_sram_pim (NoC split modeled in subsim)"

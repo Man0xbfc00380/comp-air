@@ -147,23 +147,45 @@ def parse_packet_isa(path: str) -> list[dict[str, str]]:
     return packets
 
 
-def noc_steps_from_row(line: str, py: str, collective_split: int = 1) -> int:
+def noc_steps_from_row(line: str, py: str, collective_split: int = 1, exp_micro: str = "exp") -> int:
     parts = dict(tok.split("=", 1) for tok in line.split("\t") if "=" in tok)
+    op = (parts.get("OP") or "").strip().upper()
     micro = parts.get("MICRO", "rmsnorm.py")
     repeat = int(parts.get("REPEAT", "1"))
     num = int(parts.get("num_per_bank", "52"))
     driver = os.path.join(REPO, "compair_noc_driver.py")
-    micro_l = micro.lower()
-    if "rmsnorm" in micro_l:
-        name = "rmsnorm"
-    elif "softmax" in micro_l:
-        name = "softmax"
-    elif "rope" in micro_l:
+    if op == "REDUCE":
+        name = "reduce"
+    elif op == "BROADCAST":
+        name = "broadcast"
+    elif op == "SQRT":
+        name = "sqrt"
+    elif op == "SCALAR":
+        mode = (parts.get("MODE") or "R").strip().upper()
+        # Taylor exp loop is represented by 3 SIMD rows (MUL/DIV/ADD).
+        # Runtime subsim keeps one fused execution for MUL row; helper rows are skipped.
+        if mode == "EXP_MUL":
+            # Per user requirement: always dispatch exp semantics to exp.py backend.
+            name = "exp"
+        elif mode in {"EXP_DIV", "EXP_ADD"}:
+            return 0
+        else:
+            name = "scalar_r"
+    elif op == "ROPE":
         name = "rope"
-    elif "exp" in micro_l:
-        name = "exp"
     else:
-        raise ValueError(f"Unsupported NoC microprogram in row ISA: {micro}")
+        # Backward compatibility with legacy fused rows.
+        micro_l = micro.lower()
+        if "rmsnorm" in micro_l:
+            name = "rmsnorm"
+        elif "softmax" in micro_l:
+            name = "softmax"
+        elif "rope" in micro_l:
+            name = "rope"
+        elif "exp" in micro_l:
+            name = "exp"
+        else:
+            raise ValueError(f"Unsupported NoC microprogram in row ISA: {micro}")
     # Model collective parallel split (reduction-heavy collectives):
     # split groups reduce per-group work from num_per_bank -> ceil(num_per_bank / split).
     if name in {"rmsnorm", "softmax"} and collective_split > 1:
@@ -171,8 +193,64 @@ def noc_steps_from_row(line: str, py: str, collective_split: int = 1) -> int:
 
     total = 0
     for _ in range(repeat):
+        cmd = [py, driver, "--micro", name, "--num-per-bank", str(num)]
+        if name == "reduce":
+            cmd.extend(
+                [
+                    "--sources",
+                    str(int(parts.get("sources", "16"))),
+                    "--step",
+                    str(int(parts.get("step", "2"))),
+                    "--para-num",
+                    str(int(parts.get("para_num", "4"))),
+                    "--data",
+                    str(float(parts.get("data", "2.5"))),
+                ]
+            )
+        elif name == "broadcast":
+            cmd.extend(
+                [
+                    "--src",
+                    str(int(parts.get("src", "0"))),
+                    "--targs",
+                    str(int(parts.get("targs", "8"))),
+                    "--step",
+                    str(int(parts.get("step", "4"))),
+                    "--data",
+                    str(float(parts.get("data", "2.5"))),
+                ]
+            )
+        elif name == "sqrt":
+            cmd.extend(
+                [
+                    "--iter-num",
+                    str(int(parts.get("iter_num", "4"))),
+                    "--data",
+                    str(float(parts.get("data", "2.5"))),
+                ]
+            )
+        elif name == "scalar_r":
+            cmd.extend(
+                [
+                    "--scalar",
+                    str(float(parts.get("scalar", "1.0"))),
+                    "--op",
+                    str(int(parts.get("op", "2"))),
+                ]
+            )
+        elif name == "scalar_exp":
+            cmd.extend(
+                [
+                    "--x",
+                    str(float(parts.get("x", "2.0"))),
+                    "--iter-num",
+                    str(int(parts.get("iter_start", parts.get("iter_num", "6")))),
+                    "--num-per-bank",
+                    str(int(parts.get("num_per_bank", "52"))),
+                ]
+            )
         p = subprocess.run(
-            [py, driver, "--micro", name, "--num-per-bank", str(num)],
+            cmd,
             cwd=REPO,
             capture_output=True,
             text=True,
@@ -239,6 +317,12 @@ def main() -> None:
         default=1,
         help="Parallel split factor for reduction-style NoC collectives (rmsnorm/softmax).",
     )
+    ap.add_argument(
+        "--noc-exp-micro",
+        choices=["scalar_exp", "exp"],
+        default="exp",
+        help="Execution backend for NoC_Scalar exp loop (default: exp.py).",
+    )
     ap.add_argument("--embedding", type=int, default=4096)
     ap.add_argument("--ffn", type=int, default=11008)
     ap.add_argument("--result-dir", default=os.path.join(REPO, "compair_results"))
@@ -256,6 +340,7 @@ def main() -> None:
         "use_noc": args.use_noc,
         "use_sram_pim": args.use_sram_pim,
         "noc_collective_split": max(1, int(args.noc_collective_split)),
+        "noc_exp_micro": args.noc_exp_micro,
     }
 
     if args.run_cent:
@@ -374,6 +459,8 @@ def main() -> None:
                     packet_isa_path,
                     "--packet-json",
                     packet_isa_json,
+                    "--exp-backend",
+                    args.noc_exp_micro,
                 ],
                 cwd=REPO,
             )
@@ -391,7 +478,12 @@ def main() -> None:
         row_sram_serial_ms: dict[int, float] = {}
         for ridx, row in enumerate(rows):
             if "TARGET=NoC" in row:
-                steps = noc_steps_from_row(row, py, collective_split=max(1, int(args.noc_collective_split)))
+                steps = noc_steps_from_row(
+                    row,
+                    py,
+                    collective_split=max(1, int(args.noc_collective_split)),
+                    exp_micro=args.noc_exp_micro,
+                )
                 row_noc_ms[ridx] = steps / (args.noc_freq_ghz * 1e6)
             if "TARGET=SRAM-PIM" in row:
                 p, s = sram_ms_from_row(row, args.embedding, args.ffn)

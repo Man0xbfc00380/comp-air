@@ -4,6 +4,7 @@ This folder holds the explicit hierarchical ISA translation flow:
 
 - input: `row_isa.txt` (logical row instructions)
 - output: `packet_isa.txt` (packet instructions with explicit addresses)
+- granularity: `1 row instruction -> 1 packet instruction`
 
 ## Usage
 
@@ -24,4 +25,4 @@ Generated debug JSON (`packet_isa.txt.json`) includes:
 - NoC rows map to region base `0x10000000`
 - SRAM-PIM rows map to per-role regions under `0x80000000`
 - each row uses `row_addr_stride` (default `0x00100000`)
-- row payload is split into fixed-size packets (`packet_bytes`)
+- row payload remains row-granular in packet ISA (no row-internal chunk split)

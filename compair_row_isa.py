@@ -154,14 +154,86 @@ def emit_rows(agg: Dict[str, Any], seqlen_hint: int, dim_hint: int) -> List[str]
     if noc.get("rmsnorm_sa_input_ewmul_store", 0) or noc.get("rmsnorm_ffn_input_ewmul_store", 0):
         n = noc.get("rmsnorm_sa_input_ewmul_store", 0) + noc.get("rmsnorm_ffn_input_ewmul_store", 0)
         nb = max(8, min(512, dim_hint // 64))
-        lines.append(f"ROW\tTARGET=NoC\tMICRO=rmsnorm.py\tFUNC=rms_norm_comp_air\tREPEAT={n}\tnum_per_bank={nb}\t# RMSNorm offload phases")
+        lines.append(
+            f"ROW\tTARGET=NoC\tOP=REDUCE\tMICRO=reduce.py\tFUNC=reduce_comp_air\tREPEAT={n}\t"
+            "sources=16\tstep=2\tpara_num=4\tdata=2.5\t# RMSNorm: reduce"
+        )
+        lines.append(
+            f"ROW\tTARGET=NoC\tOP=SQRT\tMICRO=sqrt.py\tFUNC=sqrt_comp_air\tREPEAT={n}\t"
+            f"num_per_bank={nb}\titer_num=4\tdata=2.5\t# RMSNorm: sqrt over reduced sums"
+        )
+        lines.append(
+            f"ROW\tTARGET=NoC\tOP=BROADCAST\tMICRO=broadcast.py\tFUNC=broadcast_comp_air\tREPEAT={n}\t"
+            "src=0\ttargs=4\tstep=1\tdata=2.5\t# RMSNorm: broadcast stage-1"
+        )
+        lines.append(
+            f"ROW\tTARGET=NoC\tOP=BROADCAST\tMICRO=broadcast.py\tFUNC=broadcast_comp_air\tREPEAT={n}\t"
+            "src=0\ttargs=8\tstep=4\tdata=2.5\t# RMSNorm: broadcast stage-2"
+        )
+        lines.append(
+            f"ROW\tTARGET=NoC\tOP=BROADCAST\tMICRO=broadcast.py\tFUNC=broadcast_comp_air\tREPEAT={n}\t"
+            "src=0\ttargs=2\tstep=2\tdata=2.5\t# RMSNorm: broadcast stage-3"
+        )
+        lines.append(
+            f"ROW\tTARGET=NoC\tOP=SCALAR\tMODE=R\tMICRO=scalar.py\tFUNC=scalar_r_comp_air\tREPEAT={n}\t"
+            "scalar=0.015625\top=2\t# RMSNorm: multiply by 1/sqrt(N)"
+        )
     if noc.get("softmax_score_store", 0) or noc.get("softmax_reduce_load", 0):
         nb = max(8, min(4096, seqlen_hint // 2))
-        lines.append(f"ROW\tTARGET=NoC\tMICRO=softmax.py\tFUNC=softmax_comp_air\tREPEAT=1\tnum_per_bank={nb}\t# fused softmax collective")
+        lines.append(
+            f"ROW\tTARGET=NoC\tOP=SCALAR\tMODE=EXP_MUL\tMICRO=scalar.py\tFUNC=scalar_r_comp_air\tREPEAT=6\t"
+            f"num_per_bank={nb}\tsrc=ADDR1\tdst=ADDR2\tmask=0b0100\tconfig=0b00\tscalar=2.0\top=2\t"
+            "FUSE_GROUP=SOFTMAX_EXP\t# Taylor loop step-1: Res *= X"
+        )
+        lines.append(
+            f"ROW\tTARGET=NoC\tOP=SCALAR\tMODE=EXP_DIV\tMICRO=scalar.py\tFUNC=scalar_r_comp_air\tREPEAT=6\t"
+            f"num_per_bank={nb}\tsrc=ADDR2\tdst=ADDR3\tmask=0b0001\tconfig=0b01\titer_start=6\titer_step=-1\top=3\t"
+            "FUSE_GROUP=SOFTMAX_EXP\t# Taylor loop step-2: Res /= i (IterTag)"
+        )
+        lines.append(
+            f"ROW\tTARGET=NoC\tOP=SCALAR\tMODE=EXP_ADD\tMICRO=scalar.py\tFUNC=scalar_r_comp_air\tREPEAT=6\t"
+            f"num_per_bank={nb}\tsrc=ADDR3\tdst=ADDR1\tmask=0b0010\tconfig=0b00\tscalar=1.0\top=0\t"
+            "FUSE_GROUP=SOFTMAX_EXP\t# Taylor loop step-3: Res += 1"
+        )
+        lines.append(
+            "ROW\tTARGET=NoC\tOP=REDUCE\tMICRO=reduce.py\tFUNC=reduce_comp_air\tREPEAT=1\t"
+            "sources=16\tstep=2\tpara_num=4\tdata=2.5\t# Softmax: reduce denominator"
+        )
+        lines.append(
+            "ROW\tTARGET=NoC\tOP=BROADCAST\tMICRO=broadcast.py\tFUNC=broadcast_comp_air\tREPEAT=1\t"
+            "src=0\ttargs=4\tstep=1\tdata=2.5\t# Softmax: broadcast stage-1"
+        )
+        lines.append(
+            "ROW\tTARGET=NoC\tOP=BROADCAST\tMICRO=broadcast.py\tFUNC=broadcast_comp_air\tREPEAT=1\t"
+            "src=0\ttargs=8\tstep=4\tdata=2.5\t# Softmax: broadcast stage-2"
+        )
+        lines.append(
+            "ROW\tTARGET=NoC\tOP=BROADCAST\tMICRO=broadcast.py\tFUNC=broadcast_comp_air\tREPEAT=1\t"
+            "src=0\ttargs=2\tstep=2\tdata=2.5\t# Softmax: broadcast stage-3"
+        )
+        lines.append(
+            "ROW\tTARGET=NoC\tOP=SCALAR\tMODE=R\tMICRO=scalar.py\tFUNC=scalar_r_comp_air\tREPEAT=1\t"
+            "scalar=2.3\top=3\t# Softmax: reciprocal"
+        )
     if noc.get("rotary_prefill_store", 0) or noc.get("rotary_post_gather", 0):
-        lines.append("ROW\tTARGET=NoC\tMICRO=rope.py\tFUNC=rope_rearrange_comp_air\tREPEAT=1\t# rotary layout / gather")
+        lines.append("ROW\tTARGET=NoC\tOP=ROPE\tMICRO=rope.py\tFUNC=rope_rearrange_comp_air\tREPEAT=1\t# rotary layout / gather")
     if noc.get("ffn_silu_store", 0) or noc.get("ffn_silu_split_store", 0):
-        lines.append("ROW\tTARGET=NoC\tMICRO=exp.py\tFUNC=exp_comp_air\tREPEAT=1\t# SiLU nonlinearity traffic (approximate micro)")
+        nb = max(8, min(4096, seqlen_hint // 2))
+        lines.append(
+            f"ROW\tTARGET=NoC\tOP=SCALAR\tMODE=EXP_MUL\tMICRO=scalar.py\tFUNC=scalar_r_comp_air\tREPEAT=6\t"
+            f"num_per_bank={nb}\tsrc=ADDR1\tdst=ADDR2\tmask=0b0100\tconfig=0b00\tscalar=2.0\top=2\t"
+            "FUSE_GROUP=SILU_EXP\t# Taylor loop step-1: Res *= X"
+        )
+        lines.append(
+            f"ROW\tTARGET=NoC\tOP=SCALAR\tMODE=EXP_DIV\tMICRO=scalar.py\tFUNC=scalar_r_comp_air\tREPEAT=6\t"
+            f"num_per_bank={nb}\tsrc=ADDR2\tdst=ADDR3\tmask=0b0001\tconfig=0b01\titer_start=6\titer_step=-1\top=3\t"
+            "FUSE_GROUP=SILU_EXP\t# Taylor loop step-2: Res /= i (IterTag)"
+        )
+        lines.append(
+            f"ROW\tTARGET=NoC\tOP=SCALAR\tMODE=EXP_ADD\tMICRO=scalar.py\tFUNC=scalar_r_comp_air\tREPEAT=6\t"
+            f"num_per_bank={nb}\tsrc=ADDR3\tdst=ADDR1\tmask=0b0010\tconfig=0b00\tscalar=1.0\top=0\t"
+            "FUSE_GROUP=SILU_EXP\t# Taylor loop step-3: Res += 1"
+        )
 
     sbr = agg.get("sram_by_role") or {}
 
