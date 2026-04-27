@@ -1,4 +1,5 @@
 import os
+import sys
 import math
 import pandas as pd
 import argparse
@@ -8,13 +9,8 @@ from cent_simulation.cxl_latency import llama_latency, gpt_latency, vector_laten
 from cent_simulation.cent_power_calculator import DRAM_POWER, ACCEL_CYCLE, ACCEL_POWER, SRAM_POWER, CTRL_POWER, commands, isrs, power_calculator, command_processor, KILO, MEGA, GIGA, FREQ, WORD_SIZE, tRC, tBL, tCCDL, RV_COUNT, SB_RD_CYCLE, SB_WR_CYCLE, EXP_LANE_CYCLE, RV_RMSNorm_CYCLE, RV_ROTEmbed_CYCLE, RV_SFT_CYCLE_PIPELINE, RV_SFT_CYCLE_SINGLE
 from cent_simulation.utils import InOut_latency, n_heads, gqa_factor, embedding_size, ffn_size, TransformerBlock_number, minimal_channel_per_block, pipeline_parallel_mode_list, model_parallel_mode_list
 from cent_simulation.run_sim import factorize
-from cent_simulation.function_sim import func_sim_llama
+from cent_simulation.trace_paths import channels_device_folder
 
-#################################
-use_noc = False
-use_sram_pim = False
-#################################
-dir_name = f"_channels_per_device" + ("_noc" if use_noc else "") + ("_sram_pim" if use_sram_pim else "")
 
 def generate_args():
     parser = argparse.ArgumentParser()
@@ -38,67 +34,101 @@ def generate_args():
     parser.add_argument("--decoding", type=int, help="Decoding length", default=1024*2)
     parser.add_argument("--seqlen", type=int, nargs='+', help="Sequence list")
     parser.add_argument("--seqlen_gap", type=int, help="Gap between sequence lengths", default=1024)
+    parser.add_argument("--use-noc", action="store_true", help="Offload CXL collectives to CompAir NoC (booksim2)")
+    parser.add_argument("--use-sram-pim", action="store_true", help="Offload GEMV MAC to SRAM-PIM")
+    parser.add_argument("--model_parallel", action="store_true", help="Model-parallel trace layout (matches cent_simulation/run_sim.py)")
     args = parser.parse_args()
-    # Print Cfgs
-    # for k,v in sorted(vars(args).items()):
-    #     print(k,'=',v)
-    # return args
+    return args
+
 
 def generate_trace(args, seqlen_list, use_noc, use_sram_pim):
-    
-    model_parallel = False
-    rel_path = "ext/cent_pim/cent_simulation/"
+    """Invoke function_sim.py in a subprocess so its argparse does not clash with api.py."""
+    model_parallel = getattr(args, "model_parallel", False)
+    trace_folder = channels_device_folder(args.num_channels, use_noc, use_sram_pim)
+    py = os.environ.get("PYTHON", sys.executable)
 
-    print(f"Generating traces for {args.model} with {args.generate_trace_max_workers} threads...")
+    print(f"Generating traces for {args.model} (trace/{trace_folder}/)...")
 
     if args.model == "GPT3-175B":
-        model = "--GPT3-175B"
+        model_flag = "--GPT3-175B"
     elif args.model == "Llama2-70B" or "Llama3" in args.model:
-        model = "--Llama-GQA"
+        model_flag = "--Llama-GQA"
     elif "Llama2" in args.model:
-        model = "--Llama"
+        model_flag = "--Llama"
     elif "Qwen" in args.model:
-        model = "--Qwen"
-        
-    commands_generate_traces = []
+        model_flag = "--Qwen"
+    else:
+        model_flag = "--Llama"
+
     blocks_per_device = (TransformerBlock_number[args.model] - 1) // args.num_devices + 1
     channels_per_block = args.num_channels // blocks_per_device
     FC_devices_list = factorize(args.num_devices)
-    # FC_devices_list = [1, 4, 8, 32]
-    trace_log_file = []
-    for seqlen in seqlen_list:
-        if model_parallel:
-            filename = f"./trace/{args.num_channels}{dir_name}/model_parallel/{args.model}/trace_{FC_devices}_FC_devices_seqlen_{seqlen}.txt"
-        else:
-            filename = f"./trace/{args.num_channels}{dir_name}/pipeline_parallel/{args.model}/trace_{channels_per_block}_channels_per_block_seqlen_{seqlen}.txt"
-        trace_log_file.append(filename)
-    
-    # No Embedding
+    cent_pim_root = os.path.dirname(os.path.abspath(__file__))
+    fsim = os.path.join(cent_pim_root, "cent_simulation", "function_sim.py")
+
+    commands_generate_traces = []
     for seqlen in seqlen_list:
         if model_parallel:
             for FC_devices in FC_devices_list:
-                if not os.path.exists(f"./trace/{args.num_channels}{dir_name}/model_parallel/{args.model}/trace_{FC_devices}_FC_devices_seqlen_{seqlen}.txt"):
-                    commands_generate_traces.append(["python", rel_path + "function_sim.py", model, "--n_heads", str(n_heads[args.model]), "--ffn_dim", str(ffn_size[args.model]), "--only-trace", "--num-channels", str(args.num_channels), "--FC-devices", str(FC_devices), "--model-parallel", "--seqlen", str(seqlen), "--op-trace", "--GEMV", "reuse-GB", "--reuse-size", str(args.reuse_size), "--trace-file", f"../trace/{args.num_channels}_channels_per_device/model_parallel/{args.model}/trace_{FC_devices}_FC_devices_seqlen_{seqlen}.txt"])
-                # if not os.path.exists(f"./trace/{args.num_channels}{dir_name}/model_parallel_FC/{args.model}/trace_{FC_devices}_FC_devices_seqlen_{seqlen}.txt"):
-                #     commands_generate_traces.append(["python", rel_path + "function_sim.py", model, "--n_heads", str(n_heads[args.model]), "--ffn_dim", str(ffn_size[args.model]), "--only-FC", "--only-trace", "--num-channels", str(args.num_channels), "--FC-devices", str(FC_devices), "--model-parallel", "--seqlen", str(seqlen), "--op-trace", "--GEMV", "reuse-GB", "--reuse-size", str(args.reuse_size), "--trace-file", f"../trace/{args.num_channels}_channels_per_device/model_parallel_FC/{args.model}/trace_{FC_devices}_FC_devices_seqlen_{seqlen}.txt"])
+                tf = f"./trace/{trace_folder}/model_parallel/{args.model}/trace_{FC_devices}_FC_devices_seqlen_{seqlen}.txt"
+                if os.path.exists(tf):
+                    continue
+                cmd = [
+                    py, fsim, model_flag,
+                    "--n_heads", str(n_heads[args.model]),
+                    "--ffn_dim", str(ffn_size[args.model]),
+                    "--only-trace", "--num-channels", str(args.num_channels),
+                    "--FC-devices", str(FC_devices), "--model-parallel",
+                    "--seqlen", str(seqlen), "--op-trace", "--GEMV", "reuse-GB",
+                    "--reuse-size", str(args.reuse_size), "--trace-file", tf,
+                ]
+                if use_noc:
+                    cmd.append("--use-noc")
+                if use_sram_pim:
+                    cmd.append("--use-sram-pim")
+                commands_generate_traces.append(cmd)
         else:
             if channels_per_block < minimal_channel_per_block[args.model]:
-                raise ValueError(f"Channels per block {channels_per_block} is less than minimal channel per block {minimal_channel_per_block[args.model]}")
-            # if not os.path.exists(f"./trace/{args.num_channels}{dir_name}/pipeline_parallel/{args.model}/trace_{channels_per_block}{dir_name}{seqlen}.txt"):
-            #     commands_generate_traces.append(["python", rel_path + "function_sim.py", model, "--n_heads", str(n_heads[args.model]), "--ffn_dim", str(ffn_size[args.model]), "--only-trace", "--num-channels", str(args.num_channels), "--channels-per-block", str(channels_per_block), "--pipeline-parallel", "--multi-tb-per-device", "--seqlen", str(seqlen), "--op-trace", "--GEMV", "reuse-GB", "--reuse-size", str(args.reuse_size), "--trace-file", f"../trace/{args.num_channels}_channels_per_device/pipeline_parallel/{args.model}/trace_{channels_per_block}_channels_per_block_seqlen_{seqlen}.txt"])
-    
-    func_sim_llama(trace_log_file, seqlen_list, use_noc, use_sram_pim, channels_per_block, args.model)
+                raise ValueError(
+                    f"Channels per block {channels_per_block} is less than minimal channel per block {minimal_channel_per_block[args.model]}"
+                )
+            tf = f"./trace/{trace_folder}/pipeline_parallel/{args.model}/trace_{channels_per_block}_channels_per_block_seqlen_{seqlen}.txt"
+            if os.path.exists(tf):
+                continue
+            cmd = [
+                py, fsim, model_flag,
+                "--n_heads", str(n_heads[args.model]),
+                "--ffn_dim", str(ffn_size[args.model]),
+                "--only-trace", "--num-channels", str(args.num_channels),
+                "--channels-per-block", str(channels_per_block),
+                "--pipeline-parallel", "--multi-tb-per-device",
+                "--seqlen", str(seqlen), "--op-trace", "--GEMV", "reuse-GB",
+                "--reuse-size", str(args.reuse_size), "--trace-file", tf,
+            ]
+            if use_noc:
+                cmd.append("--use-noc")
+            if use_sram_pim:
+                cmd.append("--use-sram-pim")
+            commands_generate_traces.append(cmd)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.generate_trace_max_workers) as ex:
+        futs = [ex.submit(subprocess.run, cmd, cwd=cent_pim_root, check=True) for cmd in commands_generate_traces]
+        for f in concurrent.futures.as_completed(futs):
+            f.result()
 
 def DRAM_PIM_Compute_API():
     
     # Prepare arguments & directories
     args = generate_args()
+    use_noc = args.use_noc
+    use_sram_pim = args.use_sram_pim
+    trace_folder = channels_device_folder(args.num_channels, use_noc, use_sram_pim)
     if args.seqlen:
         seqlen_list = args.seqlen
     else:
         seqlen_list = [i * args.seqlen_gap for i in range(1, (args.prefill + args.decoding) // args.seqlen_gap + 1)]
     for mode in pipeline_parallel_mode_list + model_parallel_mode_list:
-        subprocess.run(["mkdir", "-p", f"./trace/{args.num_channels}{dir_name}/{mode}/{args.model}"])
+        subprocess.run(["mkdir", "-p", f"./trace/{trace_folder}/{mode}/{args.model}"])
     
     # Generate traces
     generate_trace(args, seqlen_list, use_noc, use_sram_pim)

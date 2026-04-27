@@ -77,9 +77,15 @@ class TransformerBlockGPT(TransformerBlock):
 
         # K/Q/V GEMV
         if self.trace_fc_kqvo:
-            self.Vector_Matrix_Mul_weight_pim_only_trace(channel_lst, self.wq_row_index, self.dim, self.head_dim * self.n_heads, FC_total_banks, "breakdown_sa_weight")
-            self.Vector_Matrix_Mul_weight_pim_only_trace(channel_lst, self.wk_row_index, self.dim, self.head_dim * self.n_kv_heads, FC_total_banks, "breakdown_sa_weight")
-            self.Vector_Matrix_Mul_weight_pim_only_trace(channel_lst, self.wv_row_index, self.dim, self.head_dim * self.n_kv_heads, FC_total_banks, "breakdown_sa_weight")
+            self.Vector_Matrix_Mul_weight_pim_only_trace(
+                channel_lst, self.wq_row_index, self.dim, self.head_dim * self.n_heads, FC_total_banks, "breakdown_sa_weight", sram_role="Wq"
+            )
+            self.Vector_Matrix_Mul_weight_pim_only_trace(
+                channel_lst, self.wk_row_index, self.dim, self.head_dim * self.n_kv_heads, FC_total_banks, "breakdown_sa_weight", sram_role="Wk"
+            )
+            self.Vector_Matrix_Mul_weight_pim_only_trace(
+                channel_lst, self.wv_row_index, self.dim, self.head_dim * self.n_kv_heads, FC_total_banks, "breakdown_sa_weight", sram_role="Wv"
+            )
 
         # CXL Port
         if self.trace_attention:
@@ -200,7 +206,9 @@ class TransformerBlockGPT(TransformerBlock):
 
         # Output GEMV
         if self.trace_fc_kqvo:
-            self.Vector_Matrix_Mul_weight_pim_only_trace(channel_lst, self.wo_row_index, self.dim, self.head_dim * self.n_heads, FC_total_banks, "breakdown_sa_weight")
+            self.Vector_Matrix_Mul_weight_pim_only_trace(
+                channel_lst, self.wo_row_index, self.dim, self.head_dim * self.n_heads, FC_total_banks, "breakdown_sa_weight", sram_role="Wo"
+            )
         if self.trace_norm:
             self.EWADD_only_trace(self.dim // self.burst_length)
 
@@ -254,10 +262,14 @@ class TransformerBlockGPT(TransformerBlock):
         ffn_bank_group_length = (ffn_dim - 1) // (total_banks // 4) + 1
         ffn_bank_group_utilized_banks = (ffn_dim - 1) // ffn_bank_group_length + 1
         if self.trace_fc_ffn:
-            self.Vector_Matrix_Mul_weight_af_pim_only_trace(channel_lst, self.w1_row_index, self.dim, ffn_dim, FC_total_banks, "breakdown_ffn_weight")
+            self.Vector_Matrix_Mul_weight_af_pim_only_trace(
+                channel_lst, self.w1_row_index, self.dim, ffn_dim, FC_total_banks, "breakdown_ffn_weight", sram_role="W1"
+            )
 
             # w2 FFN GEMV
-            self.Vector_Matrix_Mul_weight_pim_only_trace(channel_lst, self.w2_row_index, ffn_dim * self.TP_param, self.dim // self.TP_param, FC_total_banks, "breakdown_ffn_weight")
+            self.Vector_Matrix_Mul_weight_pim_only_trace(
+                channel_lst, self.w2_row_index, ffn_dim * self.TP_param, self.dim // self.TP_param, FC_total_banks, "breakdown_ffn_weight", sram_role="W2"
+            )
         if self.trace_norm:
             self.EWADD_only_trace(self.dim // self.TP_param // self.burst_length)
 
@@ -274,7 +286,9 @@ class TransformerBlockGPT(TransformerBlock):
         channel_multi_transformer_block_required = self.num_channels // channels_required * channels_required
         channel_lst = [channel for channel in range(channel_multi_transformer_block_required)]
 
-        self.Vector_Matrix_Mul_weight_pim_only_trace(channel_lst, self.wq_row_index, self.vocab_size, self.dim // self.TP_param, FC_total_banks, "breakdown_embedding_weight")
+        self.Vector_Matrix_Mul_weight_pim_only_trace(
+            channel_lst, self.wq_row_index, self.vocab_size, self.dim // self.TP_param, FC_total_banks, "breakdown_embedding_weight", sram_role="Emb_in"
+        )
         # output embedding
 
         # RMSNorm   x.pow   MAC_ABK
@@ -318,7 +332,9 @@ class TransformerBlockGPT(TransformerBlock):
         self.load_from_EWMUL_input_only_trace(channels_required, input_vector_EWMUL_utilized_banks, 2, self.SANorm_row_index, input_vector_EWMUL_length)
         self.SYNC_only_trace()
 
-        self.Vector_Matrix_Mul_weight_pim_only_trace(channel_lst, self.wo_row_index, self.dim, self.vocab_size // self.TP_param, FC_total_banks, "breakdown_embedding_weight")
+        self.Vector_Matrix_Mul_weight_pim_only_trace(
+            channel_lst, self.wo_row_index, self.dim, self.vocab_size // self.TP_param, FC_total_banks, "breakdown_embedding_weight", sram_role="Emb_out"
+        )
 
 
     def trace_only_FC(self):
@@ -337,19 +353,31 @@ class TransformerBlockGPT(TransformerBlock):
         # RMSNorm
 
         # K/Q/V GEMV
-        self.Vector_Matrix_Mul_weight_pim_only_trace(channel_lst, self.wq_row_index, self.dim, self.head_dim * self.n_heads, FC_total_banks, "breakdown_sa_weight")
-        self.Vector_Matrix_Mul_weight_pim_only_trace(channel_lst, self.wk_row_index, self.dim, self.head_dim * self.n_kv_heads, FC_total_banks, "breakdown_sa_weight")
-        self.Vector_Matrix_Mul_weight_pim_only_trace(channel_lst, self.wv_row_index, self.dim, self.head_dim * self.n_kv_heads, FC_total_banks, "breakdown_sa_weight")
+        self.Vector_Matrix_Mul_weight_pim_only_trace(
+            channel_lst, self.wq_row_index, self.dim, self.head_dim * self.n_heads, FC_total_banks, "breakdown_sa_weight", sram_role="Wq"
+        )
+        self.Vector_Matrix_Mul_weight_pim_only_trace(
+            channel_lst, self.wk_row_index, self.dim, self.head_dim * self.n_kv_heads, FC_total_banks, "breakdown_sa_weight", sram_role="Wk"
+        )
+        self.Vector_Matrix_Mul_weight_pim_only_trace(
+            channel_lst, self.wv_row_index, self.dim, self.head_dim * self.n_kv_heads, FC_total_banks, "breakdown_sa_weight", sram_role="Wv"
+        )
 
         # Output GEMV
-        self.Vector_Matrix_Mul_weight_pim_only_trace(channel_lst, self.wo_row_index, self.dim, self.head_dim * self.n_heads, FC_total_banks, "breakdown_sa_weight")
+        self.Vector_Matrix_Mul_weight_pim_only_trace(
+            channel_lst, self.wo_row_index, self.dim, self.head_dim * self.n_heads, FC_total_banks, "breakdown_sa_weight", sram_role="Wo"
+        )
 
         # w1 w3 FFN GEMV
         ffn_dim = self.w1.shape[0]
-        self.Vector_Matrix_Mul_weight_af_pim_only_trace(channel_lst, self.w1_row_index, self.dim, ffn_dim, FC_total_banks, "breakdown_ffn_weight")
+        self.Vector_Matrix_Mul_weight_af_pim_only_trace(
+            channel_lst, self.w1_row_index, self.dim, ffn_dim, FC_total_banks, "breakdown_ffn_weight", sram_role="W1"
+        )
 
         # w2 FFN GEMV
-        self.Vector_Matrix_Mul_weight_pim_only_trace(channel_lst, self.w2_row_index, ffn_dim * self.TP_param, self.dim // self.TP_param, FC_total_banks, "breakdown_ffn_weight")
+        self.Vector_Matrix_Mul_weight_pim_only_trace(
+            channel_lst, self.w2_row_index, ffn_dim * self.TP_param, self.dim // self.TP_param, FC_total_banks, "breakdown_ffn_weight", sram_role="W2"
+        )
 
     def memory_mapping(self):
         """

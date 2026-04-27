@@ -23,7 +23,7 @@ minimal_channel_per_block = {"Llama2-7B": 5, "Llama2-13B": 8, "Llama2-70B": 6, "
 pipeline_parallel_mode_list = ["pipeline_parallel", "pipeline_parallel_embedding"]
 model_parallel_mode_list = ["model_parallel", "model_parallel_embedding", "model_parallel_FC"]
 
-def generate_args_func_sim():
+def generate_args_func_sim(argv=None):
     parser = argparse.ArgumentParser('Process model parameters.')
     parser.add_argument("--filename", help="Name of weight file")
     parser.add_argument("--model", choices=["llama-2-7b", "llama-2-13b", "llama-2-70b", "qwen", "bloom"], help="model choice")
@@ -68,7 +68,9 @@ def generate_args_func_sim():
     parser.add_argument("--FC-devices", type=int, help="devices utilized for FC layer in model parallel")
     parser.add_argument("--seqlen", type=int, help="specify seqlen for only trace mode", default=4096)
     parser.add_argument("--trace-file", help="Name of generated trace file", default="generated_trace.txt")
-    args = parser.parse_args()
+    parser.add_argument("--use-noc", action="store_true", help="Offload CXL collectives to CompAir NoC (see offload manifest)")
+    parser.add_argument("--use-sram-pim", action="store_true", help="Offload GEMV MAC to SRAM-PIM")
+    args = parser.parse_args(argv)
     return args
 
 def get_args():
@@ -118,6 +120,8 @@ def get_args():
     parser.add_argument("--FC-devices", type=int, help="devices utilized for FC layer in model parallel")
     parser.add_argument("--seqlen", type=int, help="specify seqlen for only trace mode", default=4096)
     parser.add_argument("--trace-file", help="Name of generated trace file", default="null.log")
+    parser.add_argument("--use-noc", action="store_true", help="Offload CXL collectives to CompAir NoC")
+    parser.add_argument("--use-sram-pim", action="store_true", help="Offload GEMV MAC to SRAM-PIM")
     args = parser.parse_args()
     return args
 

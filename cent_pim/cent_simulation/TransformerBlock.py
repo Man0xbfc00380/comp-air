@@ -2,6 +2,7 @@ import math
 import torch
 import torch.nn.functional as F
 from cent_simulation.aim_sim import PIM
+from cent_simulation.offload_recorder import record_noc, record_sram
 from cent_simulation.utils import compare, apply_rotary_emb, repeat_kv, RMSNorm
 
 debug = True
@@ -698,7 +699,9 @@ class TransformerBlock(PIM):
                     load_reorder.append(self.load_from_DRAM_single_bank(channel // self.num_channels, channel % self.num_channels, bank, row_index, 0, self.DRAM_column, False))
             dic[channel] = torch.cat(load_reorder)
 
-    def Vector_Matrix_Mul_weight_pim_only_trace(self, channel_lst, row_index_matrix, vector_dim, matrix_col, total_banks, timing):
+    def Vector_Matrix_Mul_weight_pim_only_trace(
+        self, channel_lst, row_index_matrix, vector_dim, matrix_col, total_banks, timing, sram_role=""
+    ):
         matrix_col_per_bank = (matrix_col - 1) // total_banks + 1
         rows_per_vector = (vector_dim - 1) // self.DRAM_column + 1
         utilized_banks = (matrix_col - 1) // matrix_col_per_bank + 1  # shape = [4096, 11008]
@@ -722,8 +725,22 @@ class TransformerBlock(PIM):
                     self.WR_BIAS_only_trace(channel_lst)
                     if self.use_comp_air_sram_pim == False:
                         self.MAC_ABK_only_trace(channel_lst, row_index_matrix + vector_index_per_bank * rows_per_vector + row_index, op_size, timing)
+                    else:
+                        record_sram(
+                            "MAC_ABK",
+                            1,
+                            timing=timing,
+                            op_size=op_size,
+                            gemv="no-reuse",
+                            role=sram_role,
+                            vector_dim=vector_dim,
+                            matrix_col=matrix_col,
+                            burst_length=self.burst_length,
+                        )
                     if self.use_comp_air_noc == False:
                         self.RD_MAC_only_trace(channel_lst)
+                    else:
+                        record_noc("RD_MAC", timing=timing, op_size=op_size, gemv="no-reuse")
         elif self.GEMV_order == "reuse-GB":
             num_reuse_groups = (matrix_col_per_bank - 1) // self.reuse_size + 1
             reuse_group_size = (matrix_col_per_bank - 1) // num_reuse_groups + 1
@@ -746,11 +763,27 @@ class TransformerBlock(PIM):
                         vector_index_per_bank = reuse_group_index * reuse_group_size + latch_index
                         if self.use_comp_air_sram_pim == False:
                             self.MAC_ABK_only_trace(channel_lst, row_index_matrix + vector_index_per_bank * rows_per_vector + row_index, op_size, timing)
+                        else:
+                            record_sram(
+                                "MAC_ABK",
+                                1,
+                                timing=timing,
+                                op_size=op_size,
+                                gemv="reuse-GB",
+                                role=sram_role,
+                                vector_dim=vector_dim,
+                                matrix_col=matrix_col,
+                                burst_length=self.burst_length,
+                            )
                     for latch_index in range(num_left_maxtrix_col):
                         if self.use_comp_air_noc == False:
                             self.RD_MAC_only_trace(channel_lst)
+                        else:
+                            record_noc("RD_MAC", timing=timing, op_size=op_size, gemv="reuse-GB")
 
-    def Vector_Matrix_Mul_weight_af_pim_only_trace(self, channel_lst, row_index_matrix, vector_dim, matrix_col, total_banks, timing):
+    def Vector_Matrix_Mul_weight_af_pim_only_trace(
+        self, channel_lst, row_index_matrix, vector_dim, matrix_col, total_banks, timing, sram_role=""
+    ):
         matrix_col_per_bank = (matrix_col - 1) // total_banks + 1
         rows_per_vector = (vector_dim - 1) // self.DRAM_column + 1
         utilized_banks = (matrix_col - 1) // matrix_col_per_bank + 1  # shape = [4096, 11008]
@@ -768,10 +801,24 @@ class TransformerBlock(PIM):
                     self.WR_BIAS_only_trace(channel_lst)
                     if self.use_comp_air_sram_pim == False:
                         self.MAC_ABK_only_trace(channel_lst, row_index_matrix + vector_index_per_bank * rows_per_vector + row_index, op_size, timing)
+                    else:
+                        record_sram(
+                            "MAC_ABK",
+                            1,
+                            timing=timing,
+                            op_size=op_size,
+                            gemv="no-reuse-af",
+                            role=sram_role,
+                            vector_dim=vector_dim,
+                            matrix_col=matrix_col,
+                            burst_length=self.burst_length,
+                        )
                     if row_index == rows_per_vector - 1:
                         self.AF_only_trace(channel_lst)
                     if self.use_comp_air_noc == False:
                         self.RD_MAC_only_trace(channel_lst)
+                    else:
+                        record_noc("RD_MAC", timing=timing, op_size=op_size, gemv="no-reuse-af")
         elif self.GEMV_order == "reuse-GB":
             num_reuse_groups = (matrix_col_per_bank - 1) // (self.reuse_size // 2) + 1
             reuse_group_size = (matrix_col_per_bank - 1) // num_reuse_groups + 1
@@ -792,6 +839,18 @@ class TransformerBlock(PIM):
                         vector_index_per_bank = reuse_group_index * reuse_group_size + latch_index
                         if self.use_comp_air_sram_pim == False:
                             self.MAC_ABK_only_trace(channel_lst, row_index_matrix + vector_index_per_bank * rows_per_vector + row_index, op_size, timing)
+                        else:
+                            record_sram(
+                                "MAC_ABK",
+                                1,
+                                timing=timing,
+                                op_size=op_size,
+                                gemv="reuse-GB-af",
+                                role=sram_role,
+                                vector_dim=vector_dim,
+                                matrix_col=matrix_col,
+                                burst_length=self.burst_length,
+                            )
                     if row_index == rows_per_vector - 1:
                         for latch_index in range(num_left_maxtrix_col):
                             self.AF_only_trace(channel_lst)
@@ -799,6 +858,8 @@ class TransformerBlock(PIM):
                     for latch_index in range(num_left_maxtrix_col):
                         if self.use_comp_air_noc == False:
                             self.RD_MAC_only_trace(channel_lst)
+                        else:
+                            record_noc("RD_MAC", timing=timing, op_size=op_size, gemv="reuse-GB-af")
             
     def Vector_Matrix_Mul_score_pim_only_trace(self, row_index_matrix, seqlen, timing):
         rows_per_vector = (self.head_dim * self.n_kv_heads - 1) // self.DRAM_column + 1

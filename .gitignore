@@ -20,7 +20,7 @@ build/code_generator
 build/behavior_simulator
 build/assembler
 build/clock_simulator
-
+compair_results
 docs/**/build
 
 **/temp/
@@ -30,7 +30,7 @@ docs/**/build
 *.toc
 *.log
 
-# bookdim
+# booksim
 booksim2/api/build
 booksim2/api/build/CMakeFiles
 booksim2/src/booksim

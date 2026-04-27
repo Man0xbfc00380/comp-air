@@ -1,6 +1,7 @@
 import math
 import torch
 import torch.nn.functional as F
+from cent_simulation.offload_recorder import record_noc
 from cent_simulation.aim_sim import PIM
 from cent_simulation.TransformerBlock import TransformerBlock
 from cent_simulation.utils import compare, apply_rotary_emb, repeat_kv, RMSNorm
@@ -612,7 +613,9 @@ class TransformerBlockLlama(TransformerBlock):
         
         # O GEMV
         if self.trace_fc_kqvo:
-            self.Vector_Matrix_Mul_weight_pim_only_trace(channel_lst, self.wo_row_index, self.dim, self.dim, FC_total_banks, "breakdown_sa_weight")
+            self.Vector_Matrix_Mul_weight_pim_only_trace(
+                channel_lst, self.wo_row_index, self.dim, self.dim, FC_total_banks, "breakdown_sa_weight", sram_role="Wo"
+            )
     
     def trace_only_ffn(self):
         bsz, _, _ = self.x.shape
@@ -630,7 +633,9 @@ class TransformerBlockLlama(TransformerBlock):
         # w1/w3 FFN GEMV
         ffn_dim = self.w1.shape[0]
         if self.trace_fc_ffn:
-            self.Vector_Matrix_Mul_weight_af_pim_only_trace(channel_lst, self.w1_row_index, self.dim, ffn_dim, FC_total_banks, "breakdown_ffn_weight")
+            self.Vector_Matrix_Mul_weight_af_pim_only_trace(
+                channel_lst, self.w1_row_index, self.dim, ffn_dim, FC_total_banks, "breakdown_ffn_weight", sram_role="W1"
+            )
      
     def trace_only_ffn2(self):
         bsz, _, _ = self.x.shape
@@ -648,7 +653,9 @@ class TransformerBlockLlama(TransformerBlock):
         # w2 FFN GEMV
         ffn_dim = self.w1.shape[0]
         if self.trace_fc_ffn:
-            self.Vector_Matrix_Mul_weight_pim_only_trace(channel_lst, self.w2_row_index, ffn_dim, self.dim, FC_total_banks, "breakdown_ffn_weight")
+            self.Vector_Matrix_Mul_weight_pim_only_trace(
+                channel_lst, self.w2_row_index, ffn_dim, self.dim, FC_total_banks, "breakdown_ffn_weight", sram_role="W2"
+            )
     
     def trace_only_gqa(self):
         bsz, _, _ = self.x.shape
@@ -786,6 +793,8 @@ class TransformerBlockLlama(TransformerBlock):
             if self.use_comp_air_noc == False:
                 self.store_for_EWMUL_input_only_trace(channels_required, input_vector_EWMUL_utilized_banks, 0, self.x_copy_row_index, input_vector_EWMUL_length)
                 self.store_for_EWMUL_input_only_trace(channels_required, input_vector_EWMUL_utilized_banks, 1, self.x_copy_row_index, input_vector_EWMUL_length)
+            else:
+                record_noc("rmsnorm_sa_input_ewmul_store", phase="pre_sa", dim=self.dim, ewmul_len=input_vector_EWMUL_length)
 
             # RMSNorm   EWMUL
             self.EWMUL_only_trace(channel_lst, self.x_copy_row_index, (input_vector_EWMUL_length - 1) // self.burst_length + 1)
@@ -804,9 +813,15 @@ class TransformerBlockLlama(TransformerBlock):
 
         # K/Q/V GEMV
         if self.trace_fc_kqvo:
-            self.Vector_Matrix_Mul_weight_pim_only_trace(channel_lst, self.wq_row_index, self.dim, self.head_dim * self.n_heads, FC_total_banks, "breakdown_sa_weight")
-            self.Vector_Matrix_Mul_weight_pim_only_trace(channel_lst, self.wk_row_index, self.dim, self.head_dim * self.n_kv_heads, FC_total_banks, "breakdown_sa_weight")
-            self.Vector_Matrix_Mul_weight_pim_only_trace(channel_lst, self.wv_row_index, self.dim, self.head_dim * self.n_kv_heads, FC_total_banks, "breakdown_sa_weight")
+            self.Vector_Matrix_Mul_weight_pim_only_trace(
+                channel_lst, self.wq_row_index, self.dim, self.head_dim * self.n_heads, FC_total_banks, "breakdown_sa_weight", sram_role="Wq"
+            )
+            self.Vector_Matrix_Mul_weight_pim_only_trace(
+                channel_lst, self.wk_row_index, self.dim, self.head_dim * self.n_kv_heads, FC_total_banks, "breakdown_sa_weight", sram_role="Wk"
+            )
+            self.Vector_Matrix_Mul_weight_pim_only_trace(
+                channel_lst, self.wv_row_index, self.dim, self.head_dim * self.n_kv_heads, FC_total_banks, "breakdown_sa_weight", sram_role="Wv"
+            )
 
             # CXL Port
             # Store re-mapped xq/xk for EWMUL
@@ -815,6 +830,8 @@ class TransformerBlockLlama(TransformerBlock):
                 self.store_for_EWMUL_input_only_trace(channels_required, input_vector_EWMUL_utilized_banks, 1, self.xq_row_index, input_vector_EWMUL_length * 2)
                 self.time["WR_SBK"] += self.timing_constant["WR_SBK"] + self.dim * 2 // self.burst_length
                 self.store_for_EWMUL_input_only_trace(channels_required, input_vector_EWMUL_utilized_banks, 1, self.xk_row_index, input_vector_EWMUL_length // self.n_repeat * 2)
+            else:
+                record_noc("rotary_prefill_store", dim=self.dim, n_repeat=self.n_repeat, ewmul_len=input_vector_EWMUL_length)
             # Rotary embedding
             self.EWMUL_only_trace(channel_lst, self.xq_row_index, self.dim // self.burst_length)
             self.EWMUL_only_trace(channel_lst, self.xk_row_index, self.dim // self.n_repeat // self.burst_length)
@@ -824,6 +841,8 @@ class TransformerBlockLlama(TransformerBlock):
                 self.store_for_EWMUL_input_only_trace(channels_required, input_vector_EWMUL_utilized_banks, 2, self.xq_row_index, input_vector_EWMUL_length * 2)
                 self.time["RD_SBK"] += self.timing_constant["RD_SBK"] + self.dim * 2 // self.burst_length
                 self.store_for_EWMUL_input_only_trace(channels_required, input_vector_EWMUL_utilized_banks, 2, self.xk_row_index, input_vector_EWMUL_length // self.n_repeat * 2)
+            else:
+                record_noc("rotary_post_gather", dim=self.dim, n_repeat=self.n_repeat, ewmul_len=input_vector_EWMUL_length)
 
         if self.trace_attention:
             # Store xk
@@ -899,6 +918,8 @@ class TransformerBlockLlama(TransformerBlock):
             if self.use_comp_air_noc == False:
                 self.time["WR_SBK"] += self.timing_constant["WR_SBK"] * rows_per_score + seqlen // self.burst_length
                 self.store_for_EWMUL_score_only_trace(channels_required, self.scores_row_index, total_banks, 1, seqlen)
+            else:
+                record_noc("softmax_score_store", seqlen=seqlen, rows_per_score=rows_per_score)
 
             # Scale score
             num_scores_per_bank = (self.n_heads - 1) // (self.channels_per_block * 4) + 1
@@ -914,12 +935,16 @@ class TransformerBlockLlama(TransformerBlock):
             if self.use_comp_air_noc == False:
                 self.time["RD_SBK"] += self.timing_constant["RD_SBK"] * rows_per_score + seqlen // self.burst_length
                 self.load_from_EWMUL_score_only_trace(channels_required, self.scores_row_index, total_banks, 2, seqlen)
+            else:
+                record_noc("softmax_reduce_load", seqlen=seqlen, rows_per_score=rows_per_score)
             self.SYNC_only_trace()
             self.time["WR_SBK"] += self.timing_constant["WR_SBK"] * rows_per_score + seqlen // self.burst_length
             self.store_for_EWMUL_score_only_trace(channels_required, self.scores_row_index, total_banks, 0, seqlen)
             if self.use_comp_air_noc == False:    
                 self.time["WR_SBK"] += self.timing_constant["WR_SBK"] * rows_per_score + seqlen // self.burst_length
                 self.store_for_EWMUL_score_only_trace(channels_required, self.scores_row_index, total_banks, 1, seqlen)
+            else:
+                record_noc("softmax_exp_store", seqlen=seqlen, rows_per_score=rows_per_score)
 
             # Scale exp
             for score_index in range(num_scores_per_bank):
@@ -933,6 +958,8 @@ class TransformerBlockLlama(TransformerBlock):
             self.time["RD_SBK"] += self.timing_constant["RD_SBK"] * rows_per_score + seqlen // self.burst_length
             if self.use_comp_air_noc == False:
                 self.load_from_EWMUL_score_only_trace(channels_required, self.scores_row_index, total_banks, 2, seqlen)
+            else:
+                record_noc("softmax_norm_load", seqlen=seqlen, rows_per_score=rows_per_score)
             self.SYNC_only_trace()
 
         if self.trace_attention:
@@ -941,7 +968,9 @@ class TransformerBlockLlama(TransformerBlock):
 
         # Output GEMV
         if self.trace_fc_kqvo:
-            self.Vector_Matrix_Mul_weight_pim_only_trace(channel_lst, self.wo_row_index, self.dim, self.dim, FC_total_banks, "breakdown_sa_weight")
+            self.Vector_Matrix_Mul_weight_pim_only_trace(
+                channel_lst, self.wo_row_index, self.dim, self.dim, FC_total_banks, "breakdown_sa_weight", sram_role="Wo"
+            )
         
         # RMSNorm
         if self.trace_norm:
@@ -963,6 +992,8 @@ class TransformerBlockLlama(TransformerBlock):
             if self.use_comp_air_noc == False:
                 self.store_for_EWMUL_input_only_trace(channels_required, input_vector_EWMUL_utilized_banks, 1, self.sa_copy_row_index, input_vector_EWMUL_length)
                 self.store_for_EWMUL_input_only_trace(channels_required, input_vector_EWMUL_utilized_banks, 0, self.sa_copy_row_index, input_vector_EWMUL_length)
+            else:
+                record_noc("rmsnorm_ffn_input_ewmul_store", phase="post_sa", dim=self.dim, ewmul_len=input_vector_EWMUL_length)
 
             # RMSNorm   EWMUL
             self.EWMUL_only_trace(channel_lst, self.sa_copy_row_index, (input_vector_EWMUL_length - 1) // self.burst_length + 1)
@@ -984,8 +1015,12 @@ class TransformerBlockLlama(TransformerBlock):
         ffn_bank_group_length = (ffn_dim - 1) // (total_banks // 4) + 1
         ffn_bank_group_utilized_banks = (ffn_dim - 1) // ffn_bank_group_length + 1
         if self.trace_fc_ffn:
-            self.Vector_Matrix_Mul_weight_af_pim_only_trace(channel_lst, self.w1_row_index, self.dim, ffn_dim, FC_total_banks, "breakdown_ffn_weight")
-            self.Vector_Matrix_Mul_weight_pim_only_trace(channel_lst, self.w3_row_index, self.dim, ffn_dim, FC_total_banks, "breakdown_ffn_weight")
+            self.Vector_Matrix_Mul_weight_af_pim_only_trace(
+                channel_lst, self.w1_row_index, self.dim, ffn_dim, FC_total_banks, "breakdown_ffn_weight", sram_role="W1"
+            )
+            self.Vector_Matrix_Mul_weight_pim_only_trace(
+                channel_lst, self.w3_row_index, self.dim, ffn_dim, FC_total_banks, "breakdown_ffn_weight", sram_role="W3"
+            )
 
         # AF
         if self.trace_activation:
@@ -1004,6 +1039,8 @@ class TransformerBlockLlama(TransformerBlock):
                     self.store_for_EWMUL_input_only_trace(channels_required, iteration_1_bank_group_utilized_banks, 1, self.x1_sigmoid_row_index, iteration_1_bank_group_length)
                     self.store_for_EWMUL_input_only_trace(channels_required, iteration_0_bank_group_utilized_banks, 0, self.x1_row_index, iteration_0_bank_group_length)
                     self.store_for_EWMUL_input_only_trace(channels_required, iteration_1_bank_group_utilized_banks, 0, self.x1_sigmoid_row_index, iteration_1_bank_group_length)
+                else:
+                    record_noc("ffn_silu_split_store", ffn_dim=ffn_dim, iteration_0=iteration_0, iteration_1=iteration_1)
                 self.EWMUL_only_trace(channel_lst, self.x1_row_index, (iteration_0_bank_group_length - 1) // self.burst_length + 1)
                 self.EWMUL_only_trace(channel_lst, self.x1_sigmoid_row_index, (iteration_1_bank_group_length - 1) // self.burst_length + 1)
                 for bank in range(self.num_banks):
@@ -1026,6 +1063,8 @@ class TransformerBlockLlama(TransformerBlock):
                 if self.use_comp_air_noc == False:
                     self.store_for_EWMUL_input_only_trace(channels_required, ffn_bank_group_utilized_banks, 0, self.x1_sigmoid_row_index, ffn_bank_group_length)
                     self.store_for_EWMUL_input_only_trace(channels_required, ffn_bank_group_utilized_banks, 1, self.x1_sigmoid_row_index, ffn_bank_group_length)
+                else:
+                    record_noc("ffn_silu_store", ffn_dim=ffn_dim, ffn_bank_group_length=ffn_bank_group_length)
                 self.EWMUL_only_trace(channel_lst, self.x1_sigmoid_row_index, (ffn_bank_group_length - 1) // self.burst_length + 1)
                 for bank in range(self.num_banks):
                     bank_group_index = 2
@@ -1040,7 +1079,9 @@ class TransformerBlockLlama(TransformerBlock):
 
         # w2 FFN GEMV
         if self.trace_fc_ffn:
-            self.Vector_Matrix_Mul_weight_pim_only_trace(channel_lst, self.w2_row_index, ffn_dim, self.dim, FC_total_banks, "breakdown_ffn_weight")
+            self.Vector_Matrix_Mul_weight_pim_only_trace(
+                channel_lst, self.w2_row_index, ffn_dim, self.dim, FC_total_banks, "breakdown_ffn_weight", sram_role="W2"
+            )
         if self.trace_norm:
             self.EWADD_only_trace(self.dim // self.burst_length)
 
@@ -1057,7 +1098,9 @@ class TransformerBlockLlama(TransformerBlock):
         channel_multi_transformer_block_required = self.num_channels // channels_required * channels_required
         channel_lst = [channel for channel in range(channel_multi_transformer_block_required)]
 
-        self.Vector_Matrix_Mul_weight_pim_only_trace(channel_lst, self.wq_row_index, self.vocab_size, self.dim, FC_total_banks, "breakdown_embedding_weight")
+        self.Vector_Matrix_Mul_weight_pim_only_trace(
+            channel_lst, self.wq_row_index, self.vocab_size, self.dim, FC_total_banks, "breakdown_embedding_weight", sram_role="Emb_in"
+        )
         # output embedding
 
         # RMSNorm   x.pow   MAC_ABK
@@ -1089,7 +1132,9 @@ class TransformerBlockLlama(TransformerBlock):
         self.load_from_EWMUL_input_only_trace(channels_required, input_vector_EWMUL_utilized_banks, 2, self.SANorm_row_index, input_vector_EWMUL_length)
         self.SYNC_only_trace()
 
-        self.Vector_Matrix_Mul_weight_pim_only_trace(channel_lst, self.wo_row_index, self.dim, self.vocab_size, FC_total_banks, "breakdown_embedding_weight")
+        self.Vector_Matrix_Mul_weight_pim_only_trace(
+            channel_lst, self.wo_row_index, self.dim, self.vocab_size, FC_total_banks, "breakdown_embedding_weight", sram_role="Emb_out"
+        )
 
     def trace_only_FC(self):
         bsz, _, _ = self.x.shape
@@ -1107,20 +1152,34 @@ class TransformerBlockLlama(TransformerBlock):
         # RMSNorm
 
         # K/Q/V GEMV
-        self.Vector_Matrix_Mul_weight_pim_only_trace(channel_lst, self.wq_row_index, self.dim, self.head_dim * self.n_heads, FC_total_banks, "breakdown_sa_weight")
-        self.Vector_Matrix_Mul_weight_pim_only_trace(channel_lst, self.wk_row_index, self.dim, self.head_dim * self.n_kv_heads, FC_total_banks, "breakdown_sa_weight")
-        self.Vector_Matrix_Mul_weight_pim_only_trace(channel_lst, self.wv_row_index, self.dim, self.head_dim * self.n_kv_heads, FC_total_banks, "breakdown_sa_weight")
+        self.Vector_Matrix_Mul_weight_pim_only_trace(
+            channel_lst, self.wq_row_index, self.dim, self.head_dim * self.n_heads, FC_total_banks, "breakdown_sa_weight", sram_role="Wq"
+        )
+        self.Vector_Matrix_Mul_weight_pim_only_trace(
+            channel_lst, self.wk_row_index, self.dim, self.head_dim * self.n_kv_heads, FC_total_banks, "breakdown_sa_weight", sram_role="Wk"
+        )
+        self.Vector_Matrix_Mul_weight_pim_only_trace(
+            channel_lst, self.wv_row_index, self.dim, self.head_dim * self.n_kv_heads, FC_total_banks, "breakdown_sa_weight", sram_role="Wv"
+        )
 
         # Output GEMV
-        self.Vector_Matrix_Mul_weight_pim_only_trace(channel_lst, self.wo_row_index, self.dim, self.dim, FC_total_banks, "breakdown_sa_weight")
+        self.Vector_Matrix_Mul_weight_pim_only_trace(
+            channel_lst, self.wo_row_index, self.dim, self.dim, FC_total_banks, "breakdown_sa_weight", sram_role="Wo"
+        )
 
         # w1 w3 FFN GEMV
         ffn_dim = self.w1.shape[0]
-        self.Vector_Matrix_Mul_weight_af_pim_only_trace(channel_lst, self.w1_row_index, self.dim, ffn_dim, FC_total_banks, "breakdown_ffn_weight")
-        self.Vector_Matrix_Mul_weight_pim_only_trace(channel_lst, self.w3_row_index, self.dim, ffn_dim, FC_total_banks, "breakdown_ffn_weight")
+        self.Vector_Matrix_Mul_weight_af_pim_only_trace(
+            channel_lst, self.w1_row_index, self.dim, ffn_dim, FC_total_banks, "breakdown_ffn_weight", sram_role="W1"
+        )
+        self.Vector_Matrix_Mul_weight_pim_only_trace(
+            channel_lst, self.w3_row_index, self.dim, ffn_dim, FC_total_banks, "breakdown_ffn_weight", sram_role="W3"
+        )
 
         # w2 FFN GEMV
-        self.Vector_Matrix_Mul_weight_pim_only_trace(channel_lst, self.w2_row_index, ffn_dim, self.dim, FC_total_banks, "breakdown_ffn_weight")
+        self.Vector_Matrix_Mul_weight_pim_only_trace(
+            channel_lst, self.w2_row_index, ffn_dim, self.dim, FC_total_banks, "breakdown_ffn_weight", sram_role="W2"
+        )
 
     def memory_mapping(self):
         """
