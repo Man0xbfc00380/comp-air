@@ -21,10 +21,12 @@ import json
 import os
 import subprocess
 import sys
+from collections import defaultdict
 
 REPO = os.path.dirname(os.path.abspath(__file__))
 CENT_PIM = os.path.join(REPO, "cent_pim")
 CENT_SIM = os.path.join(CENT_PIM, "cent_simulation")
+ROW_TO_PACKET_COMPILER = os.path.join(REPO, "translate", "row_to_packet.py")
 
 
 def _run(cmd: list, cwd: str, env=None) -> None:
@@ -130,6 +132,19 @@ def parse_row_isa(path: str) -> list:
             if line.startswith("ROW"):
                 rows.append(line)
     return rows
+
+
+def parse_packet_isa(path: str) -> list[dict[str, str]]:
+    packets: list[dict[str, str]] = []
+    with open(path, "r", encoding="utf-8") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if not line.startswith("PKT"):
+                continue
+            packets.append(dict(tok.split("=", 1) for tok in line.split("\t") if "=" in tok))
+    return packets
 
 
 def noc_steps_from_row(line: str, py: str, collective_split: int = 1) -> int:
@@ -329,6 +344,8 @@ def main() -> None:
                 manifests.append(os.path.join(root, fn))
 
     isa_path = os.path.join(args.result_dir, "row_isa.txt")
+    packet_isa_path = os.path.join(args.result_dir, "packet_isa.txt")
+    packet_isa_json = packet_isa_path + ".json"
     if manifests:
         _run(
             [
@@ -346,6 +363,20 @@ def main() -> None:
             ],
             cwd=REPO,
         )
+        if os.path.isfile(ROW_TO_PACKET_COMPILER):
+            _run(
+                [
+                    py,
+                    ROW_TO_PACKET_COMPILER,
+                    "--row-isa",
+                    isa_path,
+                    "--packet-isa",
+                    packet_isa_path,
+                    "--packet-json",
+                    packet_isa_json,
+                ],
+                cwd=REPO,
+            )
     else:
         summary["note"] = "No .offload.json manifests found (run with --use-noc and/or --use-sram-pim)."
     summary["manifests"] = manifests
@@ -354,18 +385,61 @@ def main() -> None:
     sram_ms_pipe = 0.0
     sram_ms_serial = 0.0
     if args.run_subsims and manifests and os.path.isfile(isa_path):
-        for row in parse_row_isa(isa_path):
+        rows = parse_row_isa(isa_path)
+        row_noc_ms: dict[int, float] = {}
+        row_sram_pipe_ms: dict[int, float] = {}
+        row_sram_serial_ms: dict[int, float] = {}
+        for ridx, row in enumerate(rows):
             if "TARGET=NoC" in row:
                 steps = noc_steps_from_row(row, py, collective_split=max(1, int(args.noc_collective_split)))
-                noc_ms += steps / (args.noc_freq_ghz * 1e6)
+                row_noc_ms[ridx] = steps / (args.noc_freq_ghz * 1e6)
             if "TARGET=SRAM-PIM" in row:
                 p, s = sram_ms_from_row(row, args.embedding, args.ffn)
-                sram_ms_pipe += p
-                sram_ms_serial += s
+                row_sram_pipe_ms[ridx] = p
+                row_sram_serial_ms[ridx] = s
+
+        packet_entries: list[dict[str, str]] = []
+        if os.path.isfile(packet_isa_path):
+            packet_entries = parse_packet_isa(packet_isa_path)
+
+        if packet_entries:
+            row_bytes_sum = defaultdict(int)
+            for pkt in packet_entries:
+                row_id = int(pkt.get("ROW", "-1"))
+                pkt_bytes = int(pkt.get("BYTES", "0"))
+                if row_id >= 0 and pkt_bytes > 0:
+                    row_bytes_sum[row_id] += pkt_bytes
+
+            for pkt in packet_entries:
+                row_id = int(pkt.get("ROW", "-1"))
+                pkt_bytes = int(pkt.get("BYTES", "0"))
+                target = pkt.get("TARGET", "")
+                total_b = row_bytes_sum.get(row_id, 0)
+                if row_id < 0 or pkt_bytes <= 0 or total_b <= 0:
+                    continue
+                weight = float(pkt_bytes) / float(total_b)
+                if target == "NoC" and row_id in row_noc_ms:
+                    noc_ms += row_noc_ms[row_id] * weight
+                elif target == "SRAM-PIM" and row_id in row_sram_pipe_ms:
+                    sram_ms_pipe += row_sram_pipe_ms[row_id] * weight
+                    sram_ms_serial += row_sram_serial_ms[row_id] * weight
+
+            summary["subsim_isa_mode"] = "packet"
+            summary["packet_instruction_count"] = len(packet_entries)
+        else:
+            # Backward-compatible fallback when packet ISA is unavailable.
+            for ridx, _ in enumerate(rows):
+                noc_ms += row_noc_ms.get(ridx, 0.0)
+                sram_ms_pipe += row_sram_pipe_ms.get(ridx, 0.0)
+                sram_ms_serial += row_sram_serial_ms.get(ridx, 0.0)
+            summary["subsim_isa_mode"] = "row"
+            summary["packet_instruction_count"] = 0
     summary["noc_offload_ms_est"] = noc_ms
     summary["sram_offload_ms_est"] = sram_ms_pipe
     summary["sram_offload_ms_est_serial"] = sram_ms_serial
     summary["row_isa"] = isa_path if os.path.isfile(isa_path) else None
+    summary["packet_isa"] = packet_isa_path if os.path.isfile(packet_isa_path) else None
+    summary["packet_isa_json"] = packet_isa_json if os.path.isfile(packet_isa_json) else None
 
     out_json = os.path.join(args.result_dir, "compair_summary.json")
     with open(out_json, "w", encoding="utf-8") as f:

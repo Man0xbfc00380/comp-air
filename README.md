@@ -15,6 +15,7 @@ Key directories and scripts:
 - `cent_pim/`: DRAM-PIM trace generation and timing simulation
 - `booksim2/`: modified NoC simulator and API bindings
 - `sram_pim/`: SRAM-PIM offload model
+- `translate/`: hierarchical ISA translator (`row_isa` -> address-based `packet_isa`)
 - `compair_perf_pipeline.py`: one-command orchestration entry
 - `compair_row_isa.py`: converts offload manifests to row-level ISA view
 - `compair_noc_driver.py`: maps micro-ops to NoC driver step counts
@@ -100,9 +101,16 @@ Common useful options:
      -o compair_results/row_isa.txt --seqlen 1024 --dim 4096
    ```
 
-3. **NoC microprograms** (step-count proxy): `python compair_noc_driver.py --micro rmsnorm --num-per-bank 52` (see `compair_perf_pipeline.py` for row-to-driver mapping).
+3. **Packet-level ISA (address-based compile)** from row instructions:
 
-4. **DRAM timing** from `cent_simulation` with the same flags as trace generation:
+   ```bash
+   python translate/row_to_packet.py --row-isa compair_results/row_isa.txt \
+     --packet-isa compair_results/packet_isa.txt --packet-bytes 256
+   ```
+
+4. **NoC microprograms** (step-count proxy): `python compair_noc_driver.py --micro rmsnorm --num-per-bank 52` (see `compair_perf_pipeline.py` for row-to-driver mapping).
+
+5. **DRAM timing** from `cent_simulation` with the same flags as trace generation:
 
    ```bash
    cd cent_pim/cent_simulation
@@ -118,6 +126,7 @@ Main output locations:
 
 - `cent_pim/trace/.../`: generated traces and manifests (`*.offload.json`)
 - `compair_results/row_isa.txt`: row-level ISA abstraction
+- `compair_results/packet_isa.txt`: address-based packet-level ISA
 - `compair_results/compair_summary.json`: unified latency summary
 - `compair_results/delay_summary_by_case.json`: case-level delay aggregation (if generated in your workflow)
 
