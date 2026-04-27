@@ -132,13 +132,28 @@ def parse_row_isa(path: str) -> list:
     return rows
 
 
-def noc_steps_from_row(line: str, py: str) -> int:
+def noc_steps_from_row(line: str, py: str, collective_split: int = 1) -> int:
     parts = dict(tok.split("=", 1) for tok in line.split("\t") if "=" in tok)
     micro = parts.get("MICRO", "rmsnorm.py")
     repeat = int(parts.get("REPEAT", "1"))
     num = int(parts.get("num_per_bank", "52"))
     driver = os.path.join(REPO, "compair_noc_driver.py")
-    name = "rmsnorm" if "rmsnorm" in micro else "softmax"
+    micro_l = micro.lower()
+    if "rmsnorm" in micro_l:
+        name = "rmsnorm"
+    elif "softmax" in micro_l:
+        name = "softmax"
+    elif "rope" in micro_l:
+        name = "rope"
+    elif "exp" in micro_l:
+        name = "exp"
+    else:
+        raise ValueError(f"Unsupported NoC microprogram in row ISA: {micro}")
+    # Model collective parallel split (reduction-heavy collectives):
+    # split groups reduce per-group work from num_per_bank -> ceil(num_per_bank / split).
+    if name in {"rmsnorm", "softmax"} and collective_split > 1:
+        num = max(1, (num + collective_split - 1) // collective_split)
+
     total = 0
     for _ in range(repeat):
         p = subprocess.run(
@@ -203,6 +218,12 @@ def main() -> None:
     )
     ap.add_argument("--run-subsims", action="store_true", help="Parse row ISA and run booksim2 + SRAM models")
     ap.add_argument("--noc-freq-ghz", type=float, default=1.0, help="Convert NoC steps -> ms (rough)")
+    ap.add_argument(
+        "--noc-collective-split",
+        type=int,
+        default=1,
+        help="Parallel split factor for reduction-style NoC collectives (rmsnorm/softmax).",
+    )
     ap.add_argument("--embedding", type=int, default=4096)
     ap.add_argument("--ffn", type=int, default=11008)
     ap.add_argument("--result-dir", default=os.path.join(REPO, "compair_results"))
@@ -215,7 +236,12 @@ def main() -> None:
 
     py = sys.executable
     os.makedirs(args.result_dir, exist_ok=True)
-    summary = {"model": args.model, "use_noc": args.use_noc, "use_sram_pim": args.use_sram_pim}
+    summary = {
+        "model": args.model,
+        "use_noc": args.use_noc,
+        "use_sram_pim": args.use_sram_pim,
+        "noc_collective_split": max(1, int(args.noc_collective_split)),
+    }
 
     if args.run_cent:
         cmd = [
@@ -330,7 +356,7 @@ def main() -> None:
     if args.run_subsims and manifests and os.path.isfile(isa_path):
         for row in parse_row_isa(isa_path):
             if "TARGET=NoC" in row:
-                steps = noc_steps_from_row(row, py)
+                steps = noc_steps_from_row(row, py, collective_split=max(1, int(args.noc_collective_split)))
                 noc_ms += steps / (args.noc_freq_ghz * 1e6)
             if "TARGET=SRAM-PIM" in row:
                 p, s = sram_ms_from_row(row, args.embedding, args.ffn)

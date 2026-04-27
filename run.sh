@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Three CompAir end-to-end runs (each: trace gen + DRAM Ramulator + row ISA + subsims)
+# Four CompAir end-to-end runs (each: trace gen + DRAM Ramulator + row ISA + subsims)
 # - --run-cent: CENT function_sim writes cent_pim/trace/.../*.txt
 # - --run-ramulator: run_sim.py --simulate_trace --process_results --update_csv
 # 1) DRAM-PIM only (no --use-sram-pim / --use-noc; often no .offload.json, subsims ~0)
 # 2) DRAM-PIM + SRAM-PIM
 # 3) DRAM-PIM + SRAM-PIM + NoC
+# 4) DRAM-PIM + SRAM-PIM + NoC + collective split (reduction parallelization)
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -40,9 +41,16 @@ echo "========== (3) DRAM-PIM + SRAM-PIM + NoC =========="
   --result-dir compair_results/case_3_dram_pim_sram_pim_noc
 
 echo
+echo "========== (4) DRAM-PIM + SRAM-PIM + NoC + collective split x2 =========="
+"$PY" compair_perf_pipeline.py "${BASE[@]}" --use-noc --use-sram-pim \
+  --noc-collective-split 2 \
+  --result-dir compair_results/case_4_dram_pim_sram_pim_noc_split2
+
+echo
 echo "Done. CompAir outputs: compair_results/case_*/{row_isa.txt,compair_summary.json}"
 echo "CENT CSVs (per offload config): each case dir has simulation_results.csv, processed_results.csv"
 echo "DRAM Ramulator logs next to traces: cent_pim/trace/.../trace_*.txt.log"
 echo "  (1) 32_channels_per_device"
 echo "  (2) 32_channels_per_device_sram_pim"
 echo "  (3) 32_channels_per_device_noc_sram_pim"
+echo "  (4) 32_channels_per_device_noc_sram_pim (NoC split modeled in subsim)"
