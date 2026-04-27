@@ -1,0 +1,58 @@
+editor = vim
+*.pro.user.*
+./ideas
+.idea
+**/__pycache__
+# .vscode/  里面有一些配置文件还是要共享的
+
+*.o
+*.d
+*.so
+*.bin
+*.out
+*.log
+*.DS_Store
+*.vscode
+
+io_server.log
+rect1.png
+build/code_generator
+build/behavior_simulator
+build/assembler
+build/clock_simulator
+
+docs/**/build
+
+**/temp/
+
+# Latex-Related
+*.aux
+*.toc
+*.log
+
+# bookdim
+booksim2/api/build
+booksim2/api/build/CMakeFiles
+booksim2/src/booksim
+booksim2/src/netrace/util/trace_viewer
+cent_pim/aim_simulator/build
+cent_pim/aim_simulator/patches
+cent_pim/aim_simulator/log
+cent_pim/aim_simulator/ext
+# *.trace
+*.csv
+*.dylib
+# *.yaml
+
+# build files
+build/*
+model/*
+trace/*_channels_per_device*/
+booksim2/api/build
+apikey
+src/llm/auto_map_core.py
+
+# CENT Simulation Results
+cent_pim/cent_simulation/*.csv.old
+cent_pim/cent_simulation/*.csv
+cent_pim/cent_simulation/Figures.xlsx

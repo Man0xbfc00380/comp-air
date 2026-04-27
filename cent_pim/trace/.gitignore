@@ -1,0 +1,7 @@
+*_channels_per_device*
+original
+QKV
+FFN1
+FFN2
+Qwen-*
+GPT*
