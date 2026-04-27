@@ -1,10 +1,9 @@
 import os
 import mmap
-import sys
-sys.path.append("booksim2/api/build")
+
+import _booksim_path
 from greenlet import greenlet
-import booksim2
-from booksim2.api.booksim_sync import BookSim2Sync
+from booksim_sync import BookSim2Sync
 
 def reduce_comp_air(sim: BookSim2Sync, sources: int, step: int, data: float, para_num: int = 1, op: int = 0):
     """

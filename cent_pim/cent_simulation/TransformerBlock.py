@@ -808,8 +808,8 @@ class TransformerBlock(PIM):
         # channels_required = self.channels_per_block
         channels_required_all_devices = self.FC_total_banks // self.num_banks
         seq_iterations = (seqlen - 1) // self.FC_total_banks + 1
-        print("[QK^T] seqlen {} rows_per_vector {} seq_iterations {} n_repeat {} heads_per_row {}".format(seqlen, rows_per_vector, seq_iterations, self.n_repeat, heads_per_row))
-        print("[QK^T] DRAM_column {} FC_total_banks {} num_banks {}".format(self.DRAM_column, self.FC_total_banks, self.num_banks))
+        # print("[QK^T] seqlen {} rows_per_vector {} seq_iterations {} n_repeat {} heads_per_row {}".format(seqlen, rows_per_vector, seq_iterations, self.n_repeat, heads_per_row))
+        # print("[QK^T] DRAM_column {} FC_total_banks {} num_banks {}".format(self.DRAM_column, self.FC_total_banks, self.num_banks))
         for row_index in range(rows_per_vector):
             for seq_iter in range(seq_iterations):
                 if seq_iter == seq_iterations - 1:
@@ -835,7 +835,7 @@ class TransformerBlock(PIM):
             channel_multi_transformer_block_required = self.num_channels // self.channels_per_block * self.channels_per_block
             channel_lst = [channel for channel in range(channel_multi_transformer_block_required)]
             dim_iterations = self.head_dim // left_banks
-            print("[SV] seqlen {} num_heads_per_bank {} n_repeat {} rows_per_seq {} dim_iterations {}".format(seqlen, num_heads_per_bank, self.n_repeat, rows_per_seq, dim_iterations))
+            # print("[SV] seqlen {} num_heads_per_bank {} n_repeat {} rows_per_seq {} dim_iterations {}".format(seqlen, num_heads_per_bank, self.n_repeat, rows_per_seq, dim_iterations))
             for head_index_per_bank in range(num_heads_per_bank):
                 row_current_head = row_index_matrix + (rows_per_dim * dim_iterations) * head_index_per_bank
                 for repeat in range(self.n_repeat):

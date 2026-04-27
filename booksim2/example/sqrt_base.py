@@ -1,10 +1,9 @@
 import os
 import mmap
-import sys
-sys.path.append("booksim2/api/build")
+
+import _booksim_path
 from greenlet import greenlet
-import booksim2
-from booksim2.api.booksim_sync import BookSim2Sync
+from booksim_sync import BookSim2Sync
            
 def sqrt_comp_air(sim: BookSim2Sync, x: float, iter_num: int, is_first: bool = True):
     """

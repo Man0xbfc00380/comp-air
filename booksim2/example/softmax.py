@@ -1,14 +1,13 @@
 import os
 import mmap
-import sys
-sys.path.append("booksim2/api/build")
+
+import _booksim_path
 from greenlet import greenlet
-import booksim2
-from booksim2.api.booksim_sync import BookSim2Sync
-from ext.booksim2.example.broadcast import broadcast_comp_air
-from ext.booksim2.example.reduce import reduce_comp_air
-from ext.booksim2.example.exp import exp_comp_air
-from ext.booksim2.example.scalar import scalar_r_comp_air
+from booksim_sync import BookSim2Sync
+from broadcast import broadcast_comp_air
+from reduce import reduce_comp_air
+from exp import exp_comp_air
+from scalar import scalar_r_comp_air
 
 def softmax_comp_air(sim: BookSim2Sync, num_per_banck: int = 8):
     # e^s 8 num/bank * 16 banks * 32 channels = 4096

@@ -116,19 +116,19 @@ if __name__ == "__main__":
     # print("Variable\t Dimension\t\t\t Rows required\n")
     TB.memory_mapping()
     if args.only_trace:
-        # if args.embedding:
-        #     print("embedding")
-        #     TB.trace_only_embedding()
-        # elif args.only_FC:
-        #     print("FC")
-        #     TB.trace_only_FC()
-        # else:
-        #     print("ALl")
-        #     TB.trace_only()
-        # TB.trace_only()
+        
+        if args.embedding:
+            print("Trace Embedding")
+            TB.trace_only_embedding()
+        elif args.only_FC:
+            print("Trace FC")
+            TB.trace_only_FC()
+        else:
+            print("Trace All")
+            TB.trace_only()
         
         # TB.trace_only_gqa()
-        TB.trace_only_sv()
+        # TB.trace_only_sv()
         
         TB.finish()
         TB.file.close()
