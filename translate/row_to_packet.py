@@ -205,22 +205,24 @@ def write_packet_isa(out_path: str, packets: List[PacketInstruction]) -> None:
     os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("# CompAir packet-level ISA (generated from row-level ISA)\n")
-        f.write("# PKT_ID\tROW_ID\tTARGET\tROLE\tOP\tADDR_START\tADDR_END\tBYTES\tCHUNK\tREAD_ADDR\tRHS_ADDR\tWRITE_ADDR\tBACKEND\n")
+        f.write("# PKT_ID\tROW_ID\tTARGET\tROLE\tOP\tADDR_START\tADDR_END\tBYTES\tCHUNK\tREAD_ADDR\tRHS_ADDR\tWRITE_ADDR\t[ITER_NUM]\t[PATH]\n")
         for pkt in packets:
             read_addr = pkt.metadata.get("read_addr", pkt.addr_start)
             rhs_addr = pkt.metadata.get("rhs_addr", pkt.addr_start)
             write_addr = pkt.metadata.get("write_addr", pkt.addr_end)
             iter_num = pkt.metadata.get("iter_num", 0)
             path = pkt.metadata.get("path", "")
-            backend = pkt.metadata.get("backend", "")
-            f.write(
+            line = (
                 "PKT\t"
                 f"ID={pkt.packet_id}\tROW={pkt.row_id}\tTARGET={pkt.target}\tROLE={pkt.role}\t"
                 f"OP={pkt.op}\tADDR_START=0x{pkt.addr_start:016X}\tADDR_END=0x{pkt.addr_end:016X}\t"
                 f"BYTES={pkt.bytes}\tCHUNK={pkt.chunk_idx + 1}/{pkt.chunk_total}\t"
-                f"READ_ADDR=0x{int(read_addr):016X}\tRHS_ADDR=0x{int(rhs_addr):016X}\tWRITE_ADDR=0x{int(write_addr):016X}\t"
-                f"ITER_NUM={iter_num}\tPATH={path}\tBACKEND={backend}\n"
+                f"READ_ADDR=0x{int(read_addr):016X}\tRHS_ADDR=0x{int(rhs_addr):016X}\tWRITE_ADDR=0x{int(write_addr):016X}"
             )
+            if path:
+                line += f"\tITER_NUM={int(iter_num)}\tPATH={path}"
+            line += "\n"
+            f.write(line)
 
 
 def write_debug_json(path: str, packets: List[PacketInstruction], row_address_map: Dict[str, Dict[str, int]]) -> None:
