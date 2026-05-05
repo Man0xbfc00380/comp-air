@@ -135,3 +135,18 @@ Main output locations:
 - Keep `--num_channels`, `--num_devices`, `--seqlen`, `--use-noc`, and `--use-sram-pim` consistent across trace generation and timing simulation.
 - If offload flags differ between stages, the final latency summary can become inconsistent.
 - Use the one-command pipeline first, then switch to manual steps only for debugging specific stages.
+
+## Citation
+
+```
+@misc{CompAir,
+  doi = {10.48550/ARXIV.2509.13710},
+  url = {https://arxiv.org/abs/2509.13710},
+  author = {Li,  Hongyi and Ma,  Songchen and Qu,  Huanyu and Zhang,  Weihao and Chen,  Jia and Lin,  Junfeng and Tu,  Fengbin and Zhao,  Rong},
+  keywords = {Hardware Architecture (cs.AR),  FOS: Computer and information sciences,  FOS: Computer and information sciences},
+  title = {CompAir: Synergizing Complementary PIMs and In-Transit NoC Computation for Efficient LLM Acceleration},
+  publisher = {arXiv},
+  year = {2025},
+  copyright = {Creative Commons Attribution Non Commercial Share Alike 4.0 International}
+}
+```
